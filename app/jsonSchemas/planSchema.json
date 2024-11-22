@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "planCostShares": {
+      "type": "object",
+      "properties": {
+        "deductible": { "type": "integer", "minimum": 0 },
+        "_org": { "type": "string" },
+        "copay": { "type": "integer", "minimum": 0 },
+        "objectId": { "type": "string" },
+        "objectType": { "type": "string", "enum": ["membercostshare"] }
+      },
+      "required": ["deductible", "_org", "copay", "objectId", "objectType"],
+      "additionalProperties": false
+    },
+    "linkedPlanServices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "linkedService": {
+            "type": "object",
+            "properties": {
+              "_org": { "type": "string" },
+              "objectId": { "type": "string" },
+              "objectType": { "type": "string", "enum": ["service"] },
+              "name": { "type": "string" }
+            },
+            "required": ["_org", "objectId", "objectType", "name"],
+            "additionalProperties": false
+          },
+          "planserviceCostShares": {
+            "type": "object",
+            "properties": {
+              "deductible": { "type": "integer", "minimum": 0 },
+              "_org": { "type": "string" },
+              "copay": { "type": "integer", "minimum": 0 },
+              "objectId": { "type": "string" },
+              "objectType": { "type": "string", "enum": ["membercostshare"] }
+            },
+            "required": ["deductible", "_org", "copay", "objectId", "objectType"],
+            "additionalProperties": false
+          },
+          "_org": { "type": "string" },
+          "objectId": { "type": "string" },
+          "objectType": { "type": "string", "enum": ["planservice"] }
+        },
+        "required": ["linkedService", "planserviceCostShares", "_org", "objectId", "objectType"],
+        "additionalProperties": false
+      }
+    },
+    "_org": { "type": "string" },
+    "objectId": { "type": "string" },
+    "objectType": { "type": "string", "enum": ["plan"] },
+    "planStatus": { "type": "string" },
+    "creationDate": { "type": "string", "format": "date" }
+  },
+  "required": ["planCostShares", "linkedPlanServices", "_org", "objectId", "objectType", "planStatus", "creationDate"],
+  "additionalProperties": false
+}

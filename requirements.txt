@@ -1,0 +1,9 @@
+fastapi[all] 
+redis 
+pydantic 
+jsonschema 
+uvicorn
+pyjwt
+requests
+email-validator==1.1.1
+cryptography
