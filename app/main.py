@@ -10,6 +10,69 @@ import requests
 import jwt
 from fastapi.security import HTTPBearer
 from jwt import PyJWKClient
+import pika
+from elasticsearch import Elasticsearch
+
+es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'scheme': 'http'}])
+
+def initialize_index():
+    index_name = "plans"
+    if not es.indices.exists(index=index_name):
+        mappings = {
+            "mappings": {
+                "properties": {
+                    "join_field": {  # This field establishes the parent-child linkage.
+                        "type": "join",
+                        "relations": {
+                            "plan": ["planservice", "service"]  # Assuming both are children of plan.
+                        }
+                    },
+                    "planCostShares": {"type": "object"},
+                    "linkedPlanServices": {"type": "nested"},  # Using nested if they are not separate child documents.
+                    "objectId": {"type": "keyword"},
+                    "planStatus": {"type": "text"},
+                    "creationDate": {"type": "date", "format": "dd-MM-yyyy"}
+                }
+            }
+        }
+        es.indices.create(index=index_name, body=mappings)
+        print(f"Index '{index_name}' created successfully.")
+    else:
+        print(f"Index '{index_name}' already exists.")
+
+# RabbitMQ setup
+# Global variable to hold the connection and channel
+rabbitmq_connection = None
+rabbitmq_channel = None
+def rabbitmq_setup():
+    global rabbitmq_connection, rabbitmq_channel
+    if rabbitmq_connection is None or rabbitmq_connection.is_closed:
+        rabbitmq_connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host='localhost',
+                    port=5672,
+                    heartbeat=600  # Adjust the heartbeat interval as necessary
+                )
+            )
+        rabbitmq_channel = rabbitmq_connection.channel()
+        rabbitmq_channel.queue_declare(queue='elastic_queue', durable=True)
+        print("RabbitMQ connection established and queue declared.",rabbitmq_channel)
+    return rabbitmq_channel
+
+
+def publish_to_rabbitmq(action, data):
+    message = {
+        'action': action,
+        'data': data
+    }
+    channel = rabbitmq_setup()
+    channel.basic_publish(
+        exchange='',
+        routing_key='elastic_queue',
+        body=json.dumps(message),
+        properties=pika.BasicProperties(delivery_mode=2)
+    )
+    print("Message published to RabbitMQ.")
 
 # Set up the bearer token security dependency
 security = HTTPBearer()
@@ -75,7 +138,12 @@ def generate_etag(data: str) -> str:
 
 
 app = FastAPI(dependencies=[Depends(verify_google_token)])
-
+@app.on_event("startup")
+async def startup_event():
+    initialize_index()
+    print("Elasticsearch index initialization complete.")
+    rabbitmq_setup()
+    print("RabbitMQ connection established.")
 
 @app.get("/auth/callback")
 async def google_callback(code: str):
@@ -113,8 +181,48 @@ async def create_plan(plan: dict = Body(...)):
     plan_json = json.dumps(plan)
     redis_client.set(object_id, plan_json)
     etag = generate_etag(plan_json)
+    publish_to_rabbitmq('create_plan', plan)
 
     return JSONResponse(content={"message": "Plan created", "objectId": object_id}, headers={"ETag": etag}, status_code=201)
+
+@app.get("/api/v1/search/plans")
+async def search_plans(query: str):
+    search_body = {
+        'query': {
+            'multi_match': {
+                'query': query,
+                'fields': ['planStatus', '_org', 'objectType']
+            }
+        }
+    }
+    res = es.search(index='plans', body=search_body)
+    return res
+
+@app.get("/api/v1/plans/{object_id}/full")
+async def get_full_plan(object_id: str):
+    try:
+        plan_res = es.get(index='plans', id=object_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    plan = plan_res['_source']
+
+    # Fetch linked services
+    services_res = es.search(
+        index='plans',
+        body={
+            'query': {
+                'parent_id': {
+                    'type': 'service',
+                    'id': object_id
+                }
+            }
+        }
+    )
+    services = [hit['_source'] for hit in services_res['hits']['hits']]
+    plan['linkedPlanServices'] = services
+
+    return plan
 
 @app.get("/api/v1/plans/{object_id}" )
 async def get_plan(object_id: str, if_none_match: str = Header(None)):
@@ -140,6 +248,7 @@ async def update_plan(object_id: str, plan: dict = Body(...), if_match: str = He
     plan_json = json.dumps(plan)
     redis_client.set(object_id, plan_json)
     new_etag = generate_etag(plan_json)
+    publish_to_rabbitmq('update_plan', plan)
     return JSONResponse(content={"message": "Plan updated"}, headers={"ETag": new_etag})
 
 @app.patch("/api/v1/plans/{object_id}")
@@ -175,6 +284,7 @@ async def patch_plan(object_id: str, plan_patch: dict = Body(...), if_match: str
     updated_plan_json = json.dumps(updated_plan)
     redis_client.set(object_id, updated_plan_json)
     new_etag = generate_etag(updated_plan_json)
+    publish_to_rabbitmq('update_plan', updated_plan)
     return JSONResponse(content={"message": "Plan patched"}, headers={"ETag": new_etag})
 
 @app.delete("/api/v1/plans/{object_id}", status_code=204)
@@ -192,8 +302,10 @@ async def delete_plan(object_id: str):
         service_id = service.get("objectId")
         if service_id:
             redis_client.delete(service_id)
+            publish_to_rabbitmq('delete_service', {'objectId': service_id, 'parent_id': object_id})
 
     # Delete the parent object
     redis_client.delete(object_id)
+    publish_to_rabbitmq('delete_plan', {'objectId': object_id})
     # Return an empty response for 204 status
     return Response(status_code=204)

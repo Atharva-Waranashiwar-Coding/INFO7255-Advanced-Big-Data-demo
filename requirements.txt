@@ -7,3 +7,5 @@ pyjwt
 requests
 email-validator==1.1.1
 cryptography
+pika
+elasticsearch
